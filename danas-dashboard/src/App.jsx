@@ -6,7 +6,6 @@ const API_KEY = "AIzaSyCZ0lWwt95tj3t-hjseB-LWEUgmDoRmyUo";
 const SHEETS_URL = (range) =>
   `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?key=${API_KEY}`;
 
-// ─── FETCH HELPERS ────────────────────────────────────────────────────────
 async function fetchRange(range) {
   const res = await fetch(SHEETS_URL(range));
   if (!res.ok) throw new Error(`Sheets API error: ${res.status}`);
@@ -22,7 +21,17 @@ function rowsToObjects(rows) {
   );
 }
 
-// ─── COMPUTE KPIs ─────────────────────────────────────────────────────────
+const INV_MAP = {
+  "Mažiau nei €1,000": "<1k",
+  "€1,000–€2,000": "1k-2k",
+  "€2,000-€3,000": "2k-3k",
+  "€3,000+": "3k+",
+};
+
+function normalizeInv(v) {
+  return INV_MAP[v] || v;
+}
+
 function compute(leads, apps, filterSource, filterPeriod) {
   const now = new Date();
   const days = filterPeriod === "all" ? null : parseInt(filterPeriod);
@@ -49,115 +58,191 @@ function compute(leads, apps, filterSource, filterPeriod) {
   const opp = (s) => filteredLeads.filter((r) => r.opportunity_status === s).length;
   const oppIn = (...ss) => filteredLeads.filter((r) => ss.includes(r.opportunity_status)).length;
 
-  const booked = oppIn("Half-Qualified Booked","Qualified Booked","Showed up","No Show","Nurture","Middleground","Closed Won","Closed Lost");
-  const showed = oppIn("Showed up","Nurture","Middleground","Closed Won","Closed Lost");
+  // Sales funnel statuses
+  const booked = oppIn(
+    "Half-Qualified Booked", "Qualified Booked",
+    "Showed up", "No Show", "Nurture", "Middleground",
+    "Closed Won", "Closed Lost", "Unqualified",
+    "Pursuit: Pre-Call Confirm"
+  );
+  const showed = oppIn("Showed up", "Nurture", "Middleground", "Closed Won", "Closed Lost");
   const won = opp("Closed Won");
   const noShow = opp("No Show");
 
+  // Applications from Raw_Applications
   const totalApps = filteredApps.length;
   const fullApps = filteredApps.filter((r) => r.form_completion === "Full").length;
   const partialApps = filteredApps.filter((r) => r.form_completion === "Partial").length;
-  const qualifiedApps = filteredApps.filter((r) => r.investment_capacity && r.investment_capacity !== "Mažiau nei €1,000").length;
-  const unqualifiedApps = filteredApps.filter((r) => r.investment_capacity === "Mažiau nei €1,000").length;
 
-  const revenue = filteredLeads.filter((r) => r.opportunity_status === "Closed Won").reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
+  const qualifiedApps = filteredApps.filter((r) => {
+    const inv = normalizeInv(r.investment_capacity);
+    return inv && inv !== "<1k";
+  }).length;
+  const unqualifiedApps = filteredApps.filter((r) => {
+    const inv = normalizeInv(r.investment_capacity);
+    return inv === "<1k";
+  }).length;
+
+  // Revenue
+  const revenue = filteredLeads
+    .filter((r) => r.opportunity_status === "Closed Won")
+    .reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
   const cash = filteredLeads.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0);
+  const aov = won ? revenue / won : 0;
 
-  const pipeline = [
-    "Half-Qualified No-Book","Half-Qualified Booked","Qualified Booked",
-    "Showed up","No Show","Nurture","Middleground","Closed Won","Closed Lost","Unqualified"
-  ].map((s) => ({ status: s, count: opp(s) }));
+  // Rates
+  const bookedRate = qualifiedApps ? ((booked / qualifiedApps) * 100).toFixed(1) : "0.0";
+  const showRate = booked ? ((showed / booked) * 100).toFixed(1) : "0.0";
+  const noShowRate = booked ? ((noShow / booked) * 100).toFixed(1) : "0.0";
+  const closeRate = showed ? ((won / showed) * 100).toFixed(1) : "0.0";
+  const completionRate = totalApps ? ((fullApps / totalApps) * 100).toFixed(1) : "0.0";
 
-  const investment = [
-    ["< €1k", "Mažiau nei €1,000"],
-    ["€1k–€2k", "€1,000–€2,000"],
-    ["€2k–€3k", "€2,000-€3,000"],
-    ["€3k+", "€3,000+"],
-  ].map(([tier, val]) => ({
+  // Pipeline status breakdown
+  const statuses = [
+    "Half-Qualified No-Book", "Half-Qualified Booked", "Qualified Booked",
+    "Showed up", "No Show", "Nurture", "Middleground",
+    "Closed Won", "Closed Lost", "Unqualified",
+  ];
+  const pipelineBreakdown = statuses.map((s) => ({ label: s, count: opp(s) }));
+
+  // Unqualified pipeline
+  const unqualLeads = filteredLeads.filter((r) =>
+    ["Worth Dialing", "Qualified for Call", "Booked → Sales", "Dead",
+     "Unqualified - Budget"].includes(r.opportunity_status) ||
+    r.lead_status === "Unqualified - Budget"
+  );
+
+  // Count by unqual status from lead_status field  
+  const unqualTotal = filteredLeads.filter((r) =>
+    r.lead_status === "Unqualified - Budget" || r.opportunity_status === "Unqualified - Budget"
+  ).length;
+
+  const worthDialing = filteredLeads.filter((r) =>
+    r.opportunity_status === "Worth Dialing"
+  ).length;
+  const qualifiedForCall = filteredLeads.filter((r) =>
+    r.opportunity_status === "Qualified for Call"
+  ).length;
+  const bookedToSales = filteredLeads.filter((r) =>
+    r.opportunity_status === "Booked → Sales"
+  ).length;
+  const dead = filteredLeads.filter((r) =>
+    r.opportunity_status === "Dead"
+  ).length;
+
+  // Investment capacity split (from leads)
+  const invSplit = ["<1k", "1k-2k", "2k-3k", "3k+"].map((tier) => ({
     tier,
-    count: filteredApps.filter((r) => r.investment_capacity === val).length,
-    pct: totalApps ? filteredApps.filter((r) => r.investment_capacity === val).length / totalApps : 0,
+    count: filteredLeads.filter((r) => normalizeInv(r.investment_capacity) === tier).length,
   }));
 
-  const sources = ["instagram_story","instagram_bio","lead_magnet","emails","youtube","youtube1","youtube2","youtube3","tiktok","facebook"];
-  const sourceLabels = { instagram_story:"Instagram Story", instagram_bio:"Instagram Bio", lead_magnet:"Lead Magnet", emails:"Emails", youtube:"YouTube", youtube1:"YouTube (AI)", youtube2:"YouTube (Dovydas)", youtube3:"YouTube (AI Video)", tiktok:"TikTok", facebook:"Facebook" };
+  // By source
+  const sources = [
+    { key: "instagram_story", label: "IG Story" },
+    { key: "instagram_bio", label: "IG Bio" },
+    { key: "lead_magnet", label: "Lead Magnet" },
+    { key: "youtube", label: "YouTube" },
+    { key: "youtube1", label: "YT (AI)" },
+    { key: "youtube2", label: "YT (Dovydas)" },
+    { key: "youtube3", label: "YT (AI Video)" },
+    { key: "tiktok", label: "TikTok" },
+    { key: "facebook", label: "Facebook" },
+    { key: "emails", label: "Emails" },
+  ];
 
-  const bySource = sources.map((src) => {
-    const srcLeads = filteredLeads.filter((r) => r.lead_source === src);
-    const srcApps = filteredApps.filter((r) => r.lead_source === src);
-    const srcBooked = srcLeads.filter((r) => ["Half-Qualified Booked","Qualified Booked","Showed up","No Show","Nurture","Middleground","Closed Won","Closed Lost"].includes(r.opportunity_status)).length;
-    const srcShowed = srcLeads.filter((r) => ["Showed up","Nurture","Middleground","Closed Won","Closed Lost"].includes(r.opportunity_status)).length;
+  const bySource = sources.map(({ key, label }) => {
+    const srcApps = filteredApps.filter((r) => r.lead_source === key);
+    const srcLeads = filteredLeads.filter((r) => r.lead_source === key);
+    const srcBooked = srcLeads.filter((r) =>
+      ["Half-Qualified Booked","Qualified Booked","Showed up","No Show",
+       "Nurture","Middleground","Closed Won","Closed Lost"].includes(r.opportunity_status)
+    ).length;
+    const srcShowed = srcLeads.filter((r) =>
+      ["Showed up","Nurture","Middleground","Closed Won","Closed Lost"].includes(r.opportunity_status)
+    ).length;
     const srcWon = srcLeads.filter((r) => r.opportunity_status === "Closed Won").length;
-    const srcRev = srcLeads.filter((r) => r.opportunity_status === "Closed Won").reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
     const srcCash = srcLeads.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0);
     return {
-      source: sourceLabels[src],
+      label,
       apps: srcApps.length,
-      qualified: srcApps.filter((r) => r.investment_capacity && r.investment_capacity !== "Mažiau nei €1,000").length,
-      booked: srcBooked, showed: srcShowed, won: srcWon, revenue: srcRev, cash: srcCash,
+      qualified: srcApps.filter((r) => normalizeInv(r.investment_capacity) !== "<1k").length,
+      booked: srcBooked,
+      showed: srcShowed,
+      won: srcWon,
+      cash: srcCash,
     };
-  }).filter((r) => r.apps > 0 || r.booked > 0 || r.won > 0);
+  }).filter((r) => r.apps > 0 || r.booked > 0);
 
-  return { apps: { total: totalApps, full: fullApps, partial: partialApps, qualified: qualifiedApps, unqualified: unqualifiedApps }, calls: { booked, showed, noShow, won }, revenue: { won, revenue, cash, aov: won ? revenue / won : 0 }, pipeline, investment, bySource };
+  return {
+    totalApps, fullApps, partialApps, qualifiedApps, unqualifiedApps,
+    completionRate, booked, showed, won, noShow,
+    bookedRate, showRate, noShowRate, closeRate,
+    revenue, cash, aov,
+    pipelineBreakdown, bySource, invSplit,
+    unqualTotal, worthDialing, qualifiedForCall, bookedToSales, dead,
+  };
 }
 
-// ─── DESIGN TOKENS ────────────────────────────────────────────────────────
-const C = { bg:"#0d0d0d", surface:"#161616", border:"#2a2a2a", borderAccent:"#3d1f00", accent:"#e85d00", accentGlow:"rgba(232,93,0,0.1)", green:"#22c55e", greenDim:"#14532d", red:"#ef4444", text:"#f0f0f0", textMuted:"#888", textDim:"#444" };
-const pct = (n, d) => d ? `${((n / d) * 100).toFixed(1)}%` : "—";
-const eur = (n) => n ? `€${Number(n).toLocaleString("de-DE")}` : "€0";
+const fmt = (n) => n?.toLocaleString("lt-LT", { maximumFractionDigits: 0 }) ?? "0";
+const pct = (n) => `${n}%`;
 
-function StatCard({ label, value, sub, accent, green }) {
+function StatCard({ label, value, sub, accent }) {
   return (
-    <div style={{ background: accent ? C.accentGlow : green ? "rgba(34,197,94,0.06)" : C.surface, border: `1px solid ${accent ? C.borderAccent : green ? C.greenDim : C.border}`, borderRadius: 10, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ color: C.textMuted, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 500 }}>{label}</div>
-      <div style={{ color: accent ? C.accent : green ? C.green : C.text, fontSize: 26, fontWeight: 600, lineHeight: 1.1 }}>{value}</div>
-      {sub && <div style={{ color: C.textDim, fontSize: 12, marginTop: 2 }}>{sub}</div>}
+    <div style={{
+      background: "#111", border: `1px solid ${accent || "#222"}`,
+      borderRadius: 8, padding: "14px 18px", minWidth: 0,
+    }}>
+      <div style={{ fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 700, color: accent || "#fff", lineHeight: 1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }
 
-function SectionHeader({ children }) {
+function Section({ title, color, children }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, marginTop: 28 }}>
-      <div style={{ width: 3, height: 16, background: C.accent, borderRadius: 2 }} />
-      <div style={{ color: C.textMuted, fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600 }}>{children}</div>
+    <div style={{ marginBottom: 32 }}>
+      <div style={{
+        fontSize: 11, fontWeight: 700, letterSpacing: 2,
+        color: color || "#555", textTransform: "uppercase",
+        borderBottom: `1px solid ${color || "#222"}`, paddingBottom: 6, marginBottom: 16,
+      }}>{title}</div>
+      {children}
     </div>
   );
 }
 
-function FunnelRow({ label, value, max, color = C.accent }) {
-  const w = max ? Math.max(2, (value / max) * 100) : 0;
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-      <div style={{ color: C.textMuted, fontSize: 12, minWidth: 155, textAlign: "right" }}>{label}</div>
-      <div style={{ flex: 1, background: "#1a1a1a", borderRadius: 3, height: 6, overflow: "hidden" }}>
-        <div style={{ width: `${w}%`, height: "100%", background: color, borderRadius: 3, transition: "width 0.6s ease" }} />
-      </div>
-      <div style={{ color: C.text, fontSize: 13, fontWeight: 500, minWidth: 28, textAlign: "right" }}>{value}</div>
-    </div>
-  );
-}
+const SOURCES = [
+  "all","instagram_story","instagram_bio","lead_magnet","youtube",
+  "youtube1","youtube2","youtube3","tiktok","facebook","emails",
+];
+const PERIODS = [
+  { v: "all", l: "Visi laikai" },
+  { v: "7", l: "7 dienos" },
+  { v: "30", l: "30 dienų" },
+  { v: "90", l: "90 dienų" },
+];
 
-export default function Dashboard() {
+export default function App() {
   const [leads, setLeads] = useState([]);
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [period, setPeriod] = useState("all");
-  const [source, setSource] = useState("all");
-  const [lastUpdated, setLastUpdated] = useState(null);
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const [filterSource, setFilterSource] = useState("all");
+  const [filterPeriod, setFilterPeriod] = useState("all");
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
     try {
-      const [leadsRaw, appsRaw] = await Promise.all([
+      setLoading(true);
+      setError(null);
+      const [leadRows, appRows] = await Promise.all([
         fetchRange("Raw_Leads!A:R"),
         fetchRange("Raw_Applications!A:M"),
       ]);
-      setLeads(rowsToObjects(leadsRaw));
-      setApps(rowsToObjects(appsRaw));
-      setLastUpdated(new Date());
+      setLeads(rowsToObjects(leadRows));
+      setApps(rowsToObjects(appRows));
+      setLastRefresh(new Date());
     } catch (e) {
       setError(e.message);
     } finally {
@@ -167,140 +252,153 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, [load]);
 
-  const d = (!loading && !error) ? compute(leads, apps, source, period) : null;
+  const kpi = compute(leads, apps, filterSource, filterPeriod);
 
-  const sel = { background: C.surface, border: `1px solid ${C.border}`, color: C.textMuted, padding: "5px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer", outline: "none" };
+  const selStyle = {
+    background: "#111", border: "1px solid #333", color: "#fff",
+    borderRadius: 6, padding: "6px 10px", fontSize: 12, cursor: "pointer",
+  };
 
   return (
-    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "'Inter', system-ui, sans-serif", fontSize: 14 }}>
-      {/* TOP BAR */}
-      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "0 24px", display: "flex", alignItems: "center", gap: 16, height: 52, position: "sticky", top: 0, background: C.bg, zIndex: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: loading ? C.textDim : C.green, boxShadow: loading ? "none" : `0 0 6px ${C.green}` }} />
-          <span style={{ fontWeight: 600, fontSize: 15, letterSpacing: "-0.02em" }}>Danas</span>
-          <span style={{ color: C.textDim, fontSize: 13 }}>/ Sales Dashboard</span>
+    <div style={{
+      minHeight: "100vh", background: "#0a0a0a", color: "#fff",
+      fontFamily: "'Inter', system-ui, sans-serif", padding: "24px 20px",
+      maxWidth: 1100, margin: "0 auto",
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 28 }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#fff" }}>Danas — Sales Dashboard</div>
+          <div style={{ fontSize: 11, color: "#444", marginTop: 2 }}>
+            {lastRefresh ? `Atnaujinta: ${lastRefresh.toLocaleTimeString("lt-LT")}` : "Kraunama..."}
+          </div>
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-          <select style={sel} value={source} onChange={e => setSource(e.target.value)}>
-            <option value="all">All sources</option>
-            <option value="instagram_story">Instagram Story</option>
-            <option value="instagram_bio">Instagram Bio</option>
-            <option value="lead_magnet">Lead Magnet</option>
-            <option value="emails">Emails</option>
-            <option value="youtube">YouTube</option>
-            <option value="tiktok">TikTok</option>
-            <option value="facebook">Facebook</option>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <select style={selStyle} value={filterSource} onChange={(e) => setFilterSource(e.target.value)}>
+            {SOURCES.map((s) => <option key={s} value={s}>{s === "all" ? "Visi šaltiniai" : s}</option>)}
           </select>
-          <select style={sel} value={period} onChange={e => setPeriod(e.target.value)}>
-            <option value="7">Last 7 days</option>
-            <option value="14">Last 14 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 90 days</option>
-            <option value="all">All time</option>
+          <select style={selStyle} value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)}>
+            {PERIODS.map((p) => <option key={p.v} value={p.v}>{p.l}</option>)}
           </select>
-          <button onClick={load} style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.textMuted, padding: "5px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer" }}>↻ Refresh</button>
-          {lastUpdated && <div style={{ color: C.textDim, fontSize: 11, paddingLeft: 8, borderLeft: `1px solid ${C.border}` }}>Updated {lastUpdated.toLocaleTimeString("lt-LT", { hour: "2-digit", minute: "2-digit" })}</div>}
+          <button onClick={load} style={{
+            ...selStyle, background: "#1a1a1a", padding: "6px 14px",
+            cursor: loading ? "not-allowed" : "pointer",
+          }}>{loading ? "⟳" : "↻ Refresh"}</button>
         </div>
       </div>
 
-      <div style={{ padding: "20px 24px", maxWidth: 1200, margin: "0 auto" }}>
-        {loading && <div style={{ color: C.textMuted, textAlign: "center", padding: 80, fontSize: 13 }}>Loading data from Google Sheets…</div>}
-        {error && <div style={{ color: C.red, textAlign: "center", padding: 80, fontSize: 13 }}>Error: {error}<br/><span style={{ color: C.textDim, fontSize: 11 }}>Make sure the sheet is public (Share → Anyone with link → Viewer)</span></div>}
+      {error && (
+        <div style={{ background: "#1a0000", border: "1px solid #500", borderRadius: 8, padding: 12, marginBottom: 20, color: "#f66", fontSize: 13 }}>
+          ⚠ {error}
+        </div>
+      )}
 
-        {d && <>
-          <SectionHeader>Applications</SectionHeader>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10 }}>
-            <StatCard label="Total" value={d.apps.total} accent sub="all submissions" />
-            <StatCard label="Full submissions" value={d.apps.full} sub={pct(d.apps.full, d.apps.total)} />
-            <StatCard label="Partial" value={d.apps.partial} sub={pct(d.apps.partial, d.apps.total)} />
-            <StatCard label="Qualified" value={d.apps.qualified} green sub={`invest ≥ €1k · ${pct(d.apps.qualified, d.apps.total)}`} />
-            <StatCard label="Unqualified" value={d.apps.unqualified} sub="invest < €1k" />
-          </div>
+      {/* APPLICATIONS */}
+      <Section title="Applications" color="#3b82f6">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
+          <StatCard label="Iš viso" value={fmt(kpi.totalApps)} accent="#3b82f6" />
+          <StatCard label="Full" value={fmt(kpi.fullApps)} sub={pct(kpi.completionRate) + " completion"} />
+          <StatCard label="Partial" value={fmt(kpi.partialApps)} />
+          <StatCard label="Qualified ≥1k" value={fmt(kpi.qualifiedApps)} accent="#22c55e" />
+          <StatCard label="Unqualified <1k" value={fmt(kpi.unqualifiedApps)} accent="#f59e0b" />
+        </div>
+      </Section>
 
-          <SectionHeader>Calls</SectionHeader>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10 }}>
-            <StatCard label="Booked calls" value={d.calls.booked} accent sub="qualified → booked" />
-            <StatCard label="Booked rate" value={pct(d.calls.booked, d.apps.qualified)} sub="Booked / Qualified" />
-            <StatCard label="Show rate" value={pct(d.calls.showed, d.calls.booked)} green sub={`${d.calls.showed} showed up`} />
-            <StatCard label="No-show rate" value={pct(d.calls.noShow, d.calls.booked)} sub={`${d.calls.noShow} no-shows`} />
-            <StatCard label="Close rate" value={pct(d.revenue.won, d.calls.showed)} green sub="Won / Showed" />
-          </div>
+      {/* CALLS */}
+      <Section title="Calls" color="#8b5cf6">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
+          <StatCard label="Booked" value={fmt(kpi.booked)} accent="#8b5cf6" />
+          <StatCard label="Booked Rate" value={pct(kpi.bookedRate)} sub="Booked / Qualified" />
+          <StatCard label="Showed" value={fmt(kpi.showed)} />
+          <StatCard label="Show Rate" value={pct(kpi.showRate)} />
+          <StatCard label="No Show" value={fmt(kpi.noShow)} accent="#ef4444" />
+          <StatCard label="No Show Rate" value={pct(kpi.noShowRate)} accent="#ef4444" />
+          <StatCard label="Close Rate" value={pct(kpi.closeRate)} accent="#22c55e" />
+        </div>
+      </Section>
 
-          <SectionHeader>Revenue</SectionHeader>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
-            <StatCard label="Revenue" value={eur(d.revenue.revenue)} accent sub={`${d.revenue.won} deals closed`} />
-            <StatCard label="Cash collected" value={eur(d.revenue.cash)} green sub={pct(d.revenue.cash, d.revenue.revenue)} />
-            <StatCard label="Cash to collect" value={eur(d.revenue.revenue - d.revenue.cash)} sub="outstanding" />
-            <StatCard label="AOV" value={eur(d.revenue.aov)} sub="avg order value" />
-          </div>
+      {/* REVENUE */}
+      <Section title="Revenue" color="#22c55e">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
+          <StatCard label="Closed Won" value={fmt(kpi.won)} accent="#22c55e" />
+          <StatCard label="Revenue" value={`€${fmt(kpi.revenue)}`} accent="#22c55e" />
+          <StatCard label="Cash Collected" value={`€${fmt(kpi.cash)}`} />
+          <StatCard label="Cash to Collect" value={`€${fmt(kpi.revenue - kpi.cash)}`} />
+          <StatCard label="AOV" value={`€${fmt(kpi.aov)}`} sub="Revenue / Won" />
+        </div>
+      </Section>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 28 }}>
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 20 }}>
-              <div style={{ color: C.textMuted, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, marginBottom: 16 }}>Pipeline breakdown</div>
-              {(() => {
-                const pColors = { "Closed Won": C.green, "Showed up": C.accent, "Qualified Booked": "#f59e0b", "No Show": C.red, "Closed Lost": "#7f2020", "Unqualified": "#444" };
-                const mx = Math.max(...d.pipeline.map(p => p.count), 1);
-                return d.pipeline.map((p, i) => <FunnelRow key={i} label={p.status} value={p.count} max={mx} color={pColors[p.status] || "#7a3000"} />);
-              })()}
+      {/* UNQUALIFIED PIPELINE */}
+      <Section title="Unqualified Pipeline" color="#f59e0b">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10, marginBottom: 16 }}>
+          <StatCard label="Iš viso <1k" value={fmt(kpi.unqualTotal)} accent="#f59e0b" />
+          <StatCard label="💎 Worth Dialing" value={fmt(kpi.worthDialing)} accent="#f59e0b" sub="Aktyvūs, skambinti" />
+          <StatCard label="📋 Qualified for Call" value={fmt(kpi.qualifiedForCall)} accent="#eab308" sub="Perkvalifikuoti" />
+          <StatCard label="🚀 Booked → Sales" value={fmt(kpi.bookedToSales)} accent="#22c55e" sub="Į Sales pipeline" />
+          <StatCard label="🗑 Dead" value={fmt(kpi.dead)} accent="#555" sub="Nebeskambinti" />
+        </div>
+        <div style={{ fontSize: 11, color: "#444", fontStyle: "italic" }}>
+          Konversija: {kpi.unqualTotal ? ((kpi.bookedToSales / kpi.unqualTotal) * 100).toFixed(1) : 0}% Unqual → Sales (Worth Dialing → Booked)
+        </div>
+      </Section>
+
+      {/* PIPELINE BREAKDOWN */}
+      <Section title="Pipeline Status" color="#6366f1">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
+          {kpi.pipelineBreakdown.map(({ label, count }) => (
+            <div key={label} style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              background: "#111", border: "1px solid #222", borderRadius: 6, padding: "10px 14px",
+            }}>
+              <span style={{ fontSize: 12, color: "#999" }}>{label}</span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: count > 0 ? "#fff" : "#333" }}>{count}</span>
             </div>
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 20 }}>
-              <div style={{ color: C.textMuted, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, marginBottom: 16 }}>Investment capacity</div>
-              {d.investment.map((inv, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                  <div style={{ color: C.textMuted, fontSize: 12, minWidth: 58 }}>{inv.tier}</div>
-                  <div style={{ flex: 1, background: "#1a1a1a", borderRadius: 3, height: 6, overflow: "hidden" }}>
-                    <div style={{ width: `${inv.pct * 100}%`, height: "100%", background: i === 0 ? "#444" : C.accent, borderRadius: 3, opacity: 0.5 + i * 0.15 }} />
-                  </div>
-                  <div style={{ color: C.text, fontSize: 12, minWidth: 28, textAlign: "right" }}>{inv.count}</div>
-                  <div style={{ color: C.textDim, fontSize: 11, minWidth: 40, textAlign: "right" }}>{(inv.pct * 100).toFixed(1)}%</div>
-                </div>
-              ))}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.border}` }}>
-                <div style={{ background: C.accentGlow, border: `1px solid ${C.borderAccent}`, borderRadius: 8, padding: "12px 14px" }}>
-                  <div style={{ color: C.textMuted, fontSize: 11, marginBottom: 4 }}>QA → Booked</div>
-                  <div style={{ color: C.accent, fontSize: 20, fontWeight: 600 }}>{pct(d.calls.booked, d.apps.qualified)}</div>
-                </div>
-                <div style={{ background: "rgba(34,197,94,0.06)", border: `1px solid ${C.greenDim}`, borderRadius: 8, padding: "12px 14px" }}>
-                  <div style={{ color: C.textMuted, fontSize: 11, marginBottom: 4 }}>App → Closed</div>
-                  <div style={{ color: C.green, fontSize: 20, fontWeight: 600 }}>{pct(d.revenue.won, d.apps.total)}</div>
-                </div>
-              </div>
-            </div>
-          </div>
+          ))}
+        </div>
+      </Section>
 
-          <SectionHeader>By source</SectionHeader>
-          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      {/* INVESTMENT CAPACITY */}
+      <Section title="Investment Capacity" color="#06b6d4">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 }}>
+          {kpi.invSplit.map(({ tier, count }) => (
+            <StatCard key={tier} label={tier} value={fmt(count)}
+              accent={tier === "<1k" ? "#f59e0b" : tier === "3k+" ? "#22c55e" : "#06b6d4"} />
+          ))}
+        </div>
+      </Section>
+
+      {/* BY SOURCE */}
+      {kpi.bySource.length > 0 && (
+        <Section title="By Source" color="#ec4899">
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
-                <tr>{["Source","Apps","Qualified","Booked","Showed","Won","Revenue","Cash"].map((h, i) => (
-                  <th key={h} style={{ color: C.textMuted, fontWeight: 500, padding: "10px 12px", textAlign: i === 0 ? "left" : "right", fontSize: 11, letterSpacing: "0.05em", textTransform: "uppercase", borderBottom: `1px solid ${C.border}` }}>{h}</th>
-                ))}</tr>
+                <tr>
+                  {["Šaltinis","Apps","Qualified","Booked","Showed","Won","Cash"].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "8px 12px", color: "#555", fontWeight: 600, borderBottom: "1px solid #222" }}>{h}</th>
+                  ))}
+                </tr>
               </thead>
               <tbody>
-                {d.bySource.length === 0 && <tr><td colSpan={8} style={{ color: C.textDim, textAlign: "center", padding: 24, fontSize: 12 }}>No source data yet</td></tr>}
-                {d.bySource.map((row, i) => (
-                  <tr key={i} style={{ borderBottom: `1px solid #1a1a1a` }}>
-                    <td style={{ padding: "10px 12px", color: C.text, fontWeight: 500 }}>{row.source}</td>
-                    <td style={{ padding: "10px 12px", color: C.textMuted, textAlign: "right" }}>{row.apps}</td>
-                    <td style={{ padding: "10px 12px", color: C.textMuted, textAlign: "right" }}>{row.qualified}</td>
-                    <td style={{ padding: "10px 12px", color: C.textMuted, textAlign: "right" }}>{row.booked}</td>
-                    <td style={{ padding: "10px 12px", color: C.textMuted, textAlign: "right" }}>{row.showed}</td>
-                    <td style={{ padding: "10px 12px", textAlign: "right" }}>
-                      <span style={{ background: row.won > 0 ? C.greenDim : "transparent", color: row.won > 0 ? C.green : C.textDim, padding: "2px 8px", borderRadius: 4, fontSize: 12, fontWeight: 600 }}>{row.won || "—"}</span>
-                    </td>
-                    <td style={{ padding: "10px 12px", textAlign: "right", color: row.revenue > 0 ? C.accent : C.textDim, fontWeight: row.revenue > 0 ? 600 : 400 }}>{eur(row.revenue)}</td>
-                    <td style={{ padding: "10px 12px", textAlign: "right", color: C.textMuted }}>{eur(row.cash)}</td>
+                {kpi.bySource.map((r) => (
+                  <tr key={r.label} style={{ borderBottom: "1px solid #1a1a1a" }}>
+                    <td style={{ padding: "8px 12px", color: "#ec4899", fontWeight: 600 }}>{r.label}</td>
+                    <td style={{ padding: "8px 12px", color: "#fff" }}>{r.apps}</td>
+                    <td style={{ padding: "8px 12px", color: "#22c55e" }}>{r.qualified}</td>
+                    <td style={{ padding: "8px 12px" }}>{r.booked}</td>
+                    <td style={{ padding: "8px 12px" }}>{r.showed}</td>
+                    <td style={{ padding: "8px 12px", color: r.won > 0 ? "#22c55e" : "#fff" }}>{r.won}</td>
+                    <td style={{ padding: "8px 12px", color: r.cash > 0 ? "#22c55e" : "#fff" }}>€{fmt(r.cash)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+        </Section>
+      )}
 
-          <div style={{ marginTop: 32, paddingTop: 16, borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between" }}>
-            <div style={{ color: C.textDim, fontSize: 11 }}>Live data · Danas – MAIN DATA · Raw_Leads + Raw_Applications</div>
-            <div style={{ color: C.textDim, fontSize: 11 }}>Vabanque © 2026</div>
-          </div>
-        </>}
+      <div style={{ textAlign: "center", fontSize: 10, color: "#2a2a2a", marginTop: 32 }}>
+        Vabanque × Danas · Live data from Google Sheets
       </div>
     </div>
   );
