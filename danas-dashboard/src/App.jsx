@@ -4,10 +4,9 @@ import logo from "./logo.png";
 const SHEET_ID = "1NU0Ilz9wzMJIBZnRXTr4CmU1IjeB2Hcd2XDsg9botKE";
 const API_KEY = "AIzaSyCZ0lWwt95tj3t-hjseB-LWEUgmDoRmyUo";
 const GREEN = "#4ade80";
-const GREEN_DIM = "#166534";
+const BORDER = "#1a2e1a";
 const BG = "#080b08";
 const CARD_BG = "#0d110d";
-const BORDER = "#1a2e1a";
 
 const SHEETS_URL = (range) =>
   `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?key=${API_KEY}`;
@@ -22,9 +21,7 @@ async function fetchRange(range) {
 function rowsToObjects(rows) {
   if (!rows.length) return [];
   const [headers, ...data] = rows;
-  return data.map((row) =>
-    Object.fromEntries(headers.map((h, i) => [h, row[i] || ""]))
-  );
+  return data.map((row) => Object.fromEntries(headers.map((h, i) => [h, row[i] || ""])));
 }
 
 const INV_MAP = {
@@ -35,14 +32,20 @@ const INV_MAP = {
 };
 function normalizeInv(v) { return INV_MAP[v] || v; }
 
-// No Show is real only if: status is "No Show" AND closing_call_date + 1h has passed
 function isRealNoShow(r) {
   if (r.opportunity_status !== "No Show") return false;
-  if (!r.closing_call_date) return true; // no date → count it
+  if (!r.closing_call_date) return true;
   const callTime = new Date(r.closing_call_date);
   if (isNaN(callTime)) return true;
   return new Date() > new Date(callTime.getTime() + 60 * 60 * 1000);
 }
+
+const BOOKED_STATUSES = [
+  "Half-Qualified Booked","Qualified Booked","Showed up","No Show",
+  "Nurture","Middleground","Closed Won","Closed Lost","Unqualified",
+  "Pursuit: Pre-Call Confirm"
+];
+const SHOWED_STATUSES = ["Showed up","Nurture","Middleground","Closed Won","Closed Lost"];
 
 function compute(leads, apps, scopes, filterSource, filterPeriod) {
   const now = new Date();
@@ -68,16 +71,8 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
   });
 
   const opp = (s) => filteredLeads.filter((r) => r.opportunity_status === s).length;
-  const oppIn = (...ss) => filteredLeads.filter((r) => ss.includes(r.opportunity_status)).length;
 
-  const BOOKED_STATUSES = ["Half-Qualified Booked","Qualified Booked","Showed up","No Show","Nurture","Middleground","Closed Won","Closed Lost","Unqualified","Pursuit: Pre-Call Confirm"];
-  const SHOWED_STATUSES = ["Showed up","Nurture","Middleground","Closed Won","Closed Lost"];
-
-  const booked = oppIn(...BOOKED_STATUSES);
-  const showed = oppIn(...SHOWED_STATUSES);
-  const won = opp("Closed Won");
-  const noShow = filteredLeads.filter(isRealNoShow).length;
-
+  // === APPLICATIONS ===
   const totalApps = filteredApps.length;
   const fullApps = filteredApps.filter((r) => r.form_completion === "Full").length;
   const partialApps = filteredApps.filter((r) => r.form_completion === "Partial").length;
@@ -85,47 +80,78 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
   const unqualifiedApps = filteredApps.filter((r) => normalizeInv(r.investment_capacity) === "<1k").length;
   const completionRate = totalApps ? ((fullApps / totalApps) * 100).toFixed(1) : "0.0";
 
-  const revenue = filteredLeads.filter((r) => r.opportunity_status === "Closed Won").reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
-  const cash = filteredLeads.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0);
-  const aov = won ? revenue / won : 0;
+  // === CALLS ===
+  const booked = filteredLeads.filter((r) => BOOKED_STATUSES.includes(r.opportunity_status)).length;
+  const showed = filteredLeads.filter((r) => SHOWED_STATUSES.includes(r.opportunity_status)).length;
+  const won = opp("Closed Won");
+  const noShow = filteredLeads.filter(isRealNoShow).length;
 
-  const bookedRate = qualifiedApps ? ((booked / qualifiedApps) * 100).toFixed(1) : "0.0";
+  // Confirmed = currently in Pre-Call Confirm (about to show)
+  const confirmed = opp("Pursuit: Pre-Call Confirm");
+  // Canceled = returned to No-Book after being booked
+  const canceled = filteredLeads.filter((r) =>
+    r.opportunity_status === "Half-Qualified No-Book" || r.lead_status === "Pursuit: No-Book"
+  ).length;
+  // Disqualified on call = were Qualified Booked → now Unqualified (lost)
+  const disqualifiedOnCall = filteredLeads.filter((r) =>
+    r.opportunity_status === "Unqualified"
+  ).length;
+
+  const qaToBookedRate = qualifiedApps ? ((booked / qualifiedApps) * 100).toFixed(1) : "0.0";
+  const confirmedCallRate = booked ? ((confirmed / booked) * 100).toFixed(1) : "0.0";
+  const canceledCallRate = booked ? ((canceled / booked) * 100).toFixed(1) : "0.0";
   const showRate = booked ? ((showed / booked) * 100).toFixed(1) : "0.0";
   const noShowRate = booked ? ((noShow / booked) * 100).toFixed(1) : "0.0";
   const closeRate = showed ? ((won / showed) * 100).toFixed(1) : "0.0";
+  const disqualRate = showed ? ((disqualifiedOnCall / showed) * 100).toFixed(1) : "0.0";
 
-  const pipelineStatuses = ["Half-Qualified No-Book","Half-Qualified Booked","Qualified Booked","Showed up","No Show","Nurture","Middleground","Closed Won","Closed Lost","Unqualified"];
+  // === REVENUE ===
+  const revenue = filteredLeads.filter((r) => r.opportunity_status === "Closed Won")
+    .reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
+  const cash = filteredLeads.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0);
+  const aov = won ? revenue / won : 0;
+  const cashToCollect = revenue - cash;
+
+  // === UNQUALIFIED PIPELINE ===
+  const worthDialing = opp("Worth Dialing");
+  const qualifiedForCall = opp("Qualified for Call");
+  const bookedToSales = opp("Booked → Sales");
+  const dead = opp("Dead");
+  const unqualTotal = filteredLeads.filter((r) =>
+    r.lead_status === "Unqualified - Budget" || r.opportunity_status === "Unqualified - Budget"
+  ).length;
+
+  // === PIPELINE BREAKDOWN ===
+  const pipelineStatuses = [
+    "Half-Qualified No-Book","Half-Qualified Booked","Qualified Booked",
+    "Showed up","No Show","Nurture","Middleground",
+    "Closed Won","Closed Lost","Unqualified",
+  ];
   const pipelineBreakdown = pipelineStatuses.map((s) => ({
     label: s,
     count: s === "No Show" ? noShow : opp(s),
   }));
 
-  const worthDialing = opp("Worth Dialing");
-  const qualifiedForCall = opp("Qualified for Call");
-  const bookedToSales = opp("Booked → Sales");
-  const dead = opp("Dead");
-  const unqualTotal = filteredLeads.filter((r) => r.lead_status === "Unqualified - Budget" || r.opportunity_status === "Unqualified - Budget").length;
-
+  // === INVESTMENT CAPACITY ===
   const invSplit = ["<1k","1k-2k","2k-3k","3k+"].map((tier) => ({
     tier,
     count: filteredLeads.filter((r) => normalizeInv(r.investment_capacity) === tier).length,
   }));
 
-  // Build source list from scopes tab + static ones
-  const scopeMap = {}; // key → label
-  scopes.forEach((row) => {
-    if (row[0] && row[1]) scopeMap[row[0].trim()] = row[1].trim();
-  });
+  // === BY SOURCE ===
+  const scopeMap = {};
+  scopes.forEach((row) => { if (row[0] && row[1]) scopeMap[row[0].trim()] = row[1].trim(); });
 
-  const allSourceKeys = [
-    "instagram_story","instagram_bio","lead_magnet","tiktok","facebook","emails","youtube",
-    ...Object.keys(scopeMap).filter((k) => k.startsWith("youtube") && k !== "youtube"),
-  ];
   const staticLabels = {
     instagram_story: "IG Story", instagram_bio: "IG Bio",
     lead_magnet: "Lead Magnet", tiktok: "TikTok",
     facebook: "Facebook", emails: "Emails", youtube: "YouTube (bendras)",
   };
+
+  const allSourceKeys = [
+    "instagram_story","instagram_bio","lead_magnet","tiktok","facebook","emails","youtube",
+    ...Object.keys(scopeMap).filter((k) => k.startsWith("youtube") && k !== "youtube"),
+  ];
 
   const bySource = allSourceKeys.map((key) => {
     const label = scopeMap[key] ? `YT: ${scopeMap[key]}` : (staticLabels[key] || key);
@@ -134,21 +160,34 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
     const srcBooked = srcLeads.filter((r) => BOOKED_STATUSES.includes(r.opportunity_status)).length;
     const srcShowed = srcLeads.filter((r) => SHOWED_STATUSES.includes(r.opportunity_status)).length;
     const srcWon = srcLeads.filter((r) => r.opportunity_status === "Closed Won").length;
+    const srcRevenue = srcLeads.filter((r) => r.opportunity_status === "Closed Won")
+      .reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
     const srcCash = srcLeads.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0);
-    const srcRevenue = srcLeads.filter((r) => r.opportunity_status === "Closed Won").reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
+    const srcQual = srcApps.filter((r) => normalizeInv(r.investment_capacity) !== "<1k").length;
+    const srcQaToBooked = srcQual ? ((srcBooked / srcQual) * 100).toFixed(0) + "%" : "-";
+    const srcShowRate = srcBooked ? ((srcShowed / srcBooked) * 100).toFixed(0) + "%" : "-";
+    const srcCloseRate = srcShowed ? ((srcWon / srcShowed) * 100).toFixed(0) + "%" : "-";
     return {
       key, label,
       apps: srcApps.length,
-      qualified: srcApps.filter((r) => normalizeInv(r.investment_capacity) !== "<1k").length,
-      booked: srcBooked, showed: srcShowed, won: srcWon,
-      revenue: srcRevenue, cash: srcCash,
+      qualified: srcQual,
+      booked: srcBooked,
+      qaRate: srcQaToBooked,
+      showed: srcShowed,
+      showRate: srcShowRate,
+      won: srcWon,
+      closeRate: srcCloseRate,
+      revenue: srcRevenue,
+      cash: srcCash,
     };
   }).filter((r) => r.apps > 0 || r.booked > 0 || r.won > 0);
 
   return {
     totalApps, fullApps, partialApps, qualifiedApps, unqualifiedApps, completionRate,
-    booked, showed, won, noShow, bookedRate, showRate, noShowRate, closeRate,
-    revenue, cash, aov, pipelineBreakdown, bySource, invSplit,
+    booked, showed, won, noShow, confirmed, canceled, disqualifiedOnCall,
+    qaToBookedRate, confirmedCallRate, canceledCallRate, showRate, noShowRate, closeRate, disqualRate,
+    revenue, cash, aov, cashToCollect,
+    pipelineBreakdown, bySource, invSplit,
     unqualTotal, worthDialing, qualifiedForCall, bookedToSales, dead,
   };
 }
@@ -156,14 +195,15 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
 const fmt = (n) => (n ?? 0).toLocaleString("lt-LT", { maximumFractionDigits: 0 });
 const pct = (n) => `${n}%`;
 
-function StatCard({ label, value, sub, accent, dim }) {
+function StatCard({ label, value, sub, accent, dim, highlight }) {
   return (
     <div style={{
-      background: CARD_BG, border: `1px solid ${accent ? accent + "33" : BORDER}`,
+      background: highlight ? "#0f1a0f" : CARD_BG,
+      border: `1px solid ${accent ? accent + "44" : BORDER}`,
       borderRadius: 8, padding: "14px 16px", minWidth: 0,
     }}>
       <div style={{ fontSize: 10, color: "#3d5c3d", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6, fontWeight: 600 }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 700, color: dim ? "#555" : (accent || "#d1fae5"), lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, color: dim ? "#444" : (accent || "#d1fae5"), lineHeight: 1 }}>{value}</div>
       {sub && <div style={{ fontSize: 10, color: "#2d4a2d", marginTop: 5 }}>{sub}</div>}
     </div>
   );
@@ -218,27 +258,23 @@ export default function App() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Build source filter options from scopes
   const sourceOptions = [
     { v: "all", l: "Visi šaltiniai" },
     { v: "instagram_story", l: "IG Story" },
     { v: "instagram_bio", l: "IG Bio" },
     { v: "lead_magnet", l: "Lead Magnet" },
     { v: "youtube", l: "YouTube" },
+    { v: "emails", l: "Emails" },
     { v: "tiktok", l: "TikTok" },
     { v: "facebook", l: "Facebook" },
-    { v: "emails", l: "Emails" },
-    ...scopes.filter((r) => r[0]?.startsWith("youtube")).map((r) => ({
-      v: r[0], l: `YT: ${r[1] || r[0]}`,
-    })),
+    ...scopes.filter((r) => r[0]?.startsWith("youtube")).map((r) => ({ v: r[0], l: `YT: ${r[1] || r[0]}` })),
   ];
 
   const kpi = compute(leads, apps, scopes, filterSource, filterPeriod);
 
   const selStyle = {
     background: "#0d110d", border: `1px solid ${BORDER}`, color: "#6ee87a",
-    borderRadius: 6, padding: "6px 10px", fontSize: 11, cursor: "pointer",
-    outline: "none",
+    borderRadius: 6, padding: "6px 10px", fontSize: 11, cursor: "pointer", outline: "none",
   };
 
   const grid = (cols) => ({
@@ -248,7 +284,7 @@ export default function App() {
   });
 
   return (
-    <div style={{ minHeight: "100vh", background: BG, color: "#d1fae5", fontFamily: "'Inter', system-ui, sans-serif", padding: "24px 20px", maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ minHeight: "100vh", background: BG, color: "#d1fae5", fontFamily: "'Inter', system-ui, sans-serif", padding: "24px 20px", maxWidth: 1200, margin: "0 auto" }}>
 
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32, paddingBottom: 20, borderBottom: `1px solid ${BORDER}` }}>
@@ -282,25 +318,36 @@ export default function App() {
 
       {/* APPLICATIONS */}
       <Section title="Applications">
-        <div style={grid(145)}>
+        <div style={grid(140)}>
           <StatCard label="Iš viso" value={fmt(kpi.totalApps)} accent={GREEN} />
-          <StatCard label="Full" value={fmt(kpi.fullApps)} sub={`${kpi.completionRate}% completion rate`} />
+          <StatCard label="Full" value={fmt(kpi.fullApps)} sub={`${kpi.completionRate}% completion`} />
           <StatCard label="Partial" value={fmt(kpi.partialApps)} />
-          <StatCard label="Qualified ≥1k" value={fmt(kpi.qualifiedApps)} accent={GREEN} />
+          <StatCard label="Qualified ≥1k" value={fmt(kpi.qualifiedApps)} accent={GREEN} sub={`${kpi.qualifiedApps && kpi.totalApps ? ((kpi.qualifiedApps/kpi.totalApps)*100).toFixed(1) : 0}% of apps`} />
           <StatCard label="Unqualified <1k" value={fmt(kpi.unqualifiedApps)} accent="#f59e0b" />
         </div>
       </Section>
 
       {/* CALLS */}
       <Section title="Calls">
-        <div style={grid(145)}>
-          <StatCard label="Booked" value={fmt(kpi.booked)} accent={GREEN} />
-          <StatCard label="Booked Rate" value={pct(kpi.bookedRate)} sub="Booked / Qualified" />
-          <StatCard label="Showed" value={fmt(kpi.showed)} />
-          <StatCard label="Show Rate" value={pct(kpi.showRate)} />
-          <StatCard label="No Show" value={fmt(kpi.noShow)} accent="#ef4444" sub="Praėjus 1h+ po callo" />
-          <StatCard label="No Show Rate" value={pct(kpi.noShowRate)} accent="#ef4444" />
-          <StatCard label="Close Rate" value={pct(kpi.closeRate)} accent={GREEN} />
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 10, color: "#2d4a2d", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>Funnel</div>
+          <div style={grid(145)}>
+            <StatCard label="Booked" value={fmt(kpi.booked)} accent={GREEN} />
+            <StatCard label="QA → Booked Rate" value={pct(kpi.qaToBookedRate)} sub="Booked / Qualified Apps" highlight />
+            <StatCard label="Confirmed Call Rate" value={pct(kpi.confirmedCallRate)} sub="Pre-Call Confirm / Booked" highlight />
+            <StatCard label="Canceled Call Rate" value={pct(kpi.canceledCallRate)} accent="#f59e0b" sub="No-Book / Booked" highlight />
+            <StatCard label="Showed" value={fmt(kpi.showed)} />
+            <StatCard label="Show Rate" value={pct(kpi.showRate)} sub="Showed / Booked" highlight />
+            <StatCard label="No Show" value={fmt(kpi.noShow)} accent="#ef4444" sub="Praėjus 1h+ po callo" />
+            <StatCard label="No Show Rate" value={pct(kpi.noShowRate)} accent="#ef4444" highlight />
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: "#2d4a2d", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8, marginTop: 14 }}>Sales Call Metrics</div>
+          <div style={grid(145)}>
+            <StatCard label="Close Rate" value={pct(kpi.closeRate)} accent={GREEN} sub="Won / Showed" highlight />
+            <StatCard label="Disqualification Rate" value={pct(kpi.disqualRate)} accent="#f59e0b" sub="Unqualified / Showed" highlight />
+          </div>
         </div>
       </Section>
 
@@ -310,7 +357,7 @@ export default function App() {
           <StatCard label="Closed Won" value={fmt(kpi.won)} accent={GREEN} />
           <StatCard label="Revenue" value={`€${fmt(kpi.revenue)}`} accent={GREEN} />
           <StatCard label="Cash Collected" value={`€${fmt(kpi.cash)}`} />
-          <StatCard label="Cash to Collect" value={`€${fmt(kpi.revenue - kpi.cash)}`} />
+          <StatCard label="Cash to Collect" value={`€${fmt(kpi.cashToCollect)}`} />
           <StatCard label="AOV" value={`€${fmt(kpi.aov)}`} sub="Revenue / Won" />
         </div>
       </Section>
@@ -357,28 +404,36 @@ export default function App() {
       {/* BY SOURCE */}
       <Section title="By Source">
         {kpi.bySource.length === 0 ? (
-          <div style={{ color: "#2d4a2d", fontSize: 12, fontStyle: "italic" }}>Nėra duomenų pagal šaltinius</div>
+          <div style={{ color: "#2d4a2d", fontSize: 12, fontStyle: "italic" }}>Nėra duomenų</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr>
-                  {["Šaltinis","Apps","Qualified","Booked","Showed","Won","Revenue","Cash"].map((h) => (
-                    <th key={h} style={{ textAlign: h === "Šaltinis" ? "left" : "right", padding: "8px 12px", color: "#2d4a2d", fontWeight: 600, fontSize: 10, letterSpacing: 1, textTransform: "uppercase", borderBottom: `1px solid ${BORDER}`, whiteSpace: "nowrap" }}>{h}</th>
+                  {["Šaltinis","Apps","Qualified","Booked","QA→Booked","Showed","Show%","Won","Close%","Revenue","Cash"].map((h) => (
+                    <th key={h} style={{
+                      textAlign: h === "Šaltinis" ? "left" : "right",
+                      padding: "8px 10px", color: "#2d4a2d", fontWeight: 600,
+                      fontSize: 10, letterSpacing: 1, textTransform: "uppercase",
+                      borderBottom: `1px solid ${BORDER}`, whiteSpace: "nowrap"
+                    }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {kpi.bySource.map((r) => (
                   <tr key={r.key} style={{ borderBottom: `1px solid ${BORDER}22` }}>
-                    <td style={{ padding: "9px 12px", color: GREEN, fontWeight: 600, fontSize: 12 }}>{r.label}</td>
-                    <td style={{ padding: "9px 12px", color: "#d1fae5", textAlign: "right" }}>{r.apps}</td>
-                    <td style={{ padding: "9px 12px", color: r.qualified > 0 ? GREEN : "#2d4a2d", textAlign: "right" }}>{r.qualified}</td>
-                    <td style={{ padding: "9px 12px", color: "#d1fae5", textAlign: "right" }}>{r.booked}</td>
-                    <td style={{ padding: "9px 12px", color: "#d1fae5", textAlign: "right" }}>{r.showed}</td>
-                    <td style={{ padding: "9px 12px", color: r.won > 0 ? GREEN : "#2d4a2d", textAlign: "right", fontWeight: r.won > 0 ? 700 : 400 }}>{r.won}</td>
-                    <td style={{ padding: "9px 12px", color: r.revenue > 0 ? GREEN : "#2d4a2d", textAlign: "right" }}>€{fmt(r.revenue)}</td>
-                    <td style={{ padding: "9px 12px", color: r.cash > 0 ? "#86efac" : "#2d4a2d", textAlign: "right" }}>€{fmt(r.cash)}</td>
+                    <td style={{ padding: "9px 10px", color: GREEN, fontWeight: 600, fontSize: 12 }}>{r.label}</td>
+                    <td style={{ padding: "9px 10px", color: "#d1fae5", textAlign: "right" }}>{r.apps}</td>
+                    <td style={{ padding: "9px 10px", color: r.qualified > 0 ? GREEN : "#2d4a2d", textAlign: "right" }}>{r.qualified}</td>
+                    <td style={{ padding: "9px 10px", color: "#d1fae5", textAlign: "right" }}>{r.booked}</td>
+                    <td style={{ padding: "9px 10px", color: r.qaRate !== "-" ? "#86efac" : "#2d4a2d", textAlign: "right", fontSize: 11 }}>{r.qaRate}</td>
+                    <td style={{ padding: "9px 10px", color: "#d1fae5", textAlign: "right" }}>{r.showed}</td>
+                    <td style={{ padding: "9px 10px", color: r.showRate !== "-" ? "#86efac" : "#2d4a2d", textAlign: "right", fontSize: 11 }}>{r.showRate}</td>
+                    <td style={{ padding: "9px 10px", color: r.won > 0 ? GREEN : "#2d4a2d", textAlign: "right", fontWeight: r.won > 0 ? 700 : 400 }}>{r.won}</td>
+                    <td style={{ padding: "9px 10px", color: r.closeRate !== "-" ? "#86efac" : "#2d4a2d", textAlign: "right", fontSize: 11 }}>{r.closeRate}</td>
+                    <td style={{ padding: "9px 10px", color: r.revenue > 0 ? GREEN : "#2d4a2d", textAlign: "right" }}>€{fmt(r.revenue)}</td>
+                    <td style={{ padding: "9px 10px", color: r.cash > 0 ? "#86efac" : "#2d4a2d", textAlign: "right" }}>€{fmt(r.cash)}</td>
                   </tr>
                 ))}
               </tbody>
