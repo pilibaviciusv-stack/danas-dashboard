@@ -780,7 +780,7 @@ export default function App() {
         fetchRange("Raw_Leads!A:R"),
         fetchRange("Raw_Applications!A:M"),
         fetchRange("source-scopes!A:B"),
-        fetchRange("Raw_Unqualified!A:L"),
+        fetchRange("Raw_Unqualified!A:L").catch(() => []),
       ]);
       setLeads(rowsToObjects(leadRows));
       setApps(rowsToObjects(appRows));
