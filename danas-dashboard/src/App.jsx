@@ -687,13 +687,24 @@ function SalesTab({ kpi }) {
 function UnqualifiedTab({ kpi }) {
   const convRate = kpi.unqualTotal ? ((kpi.bookedToSales / kpi.unqualTotal) * 100).toFixed(1) : "0.0";
   const qualRate = kpi.unqualTotal ? ((kpi.qualifiedForCall / kpi.unqualTotal) * 100).toFixed(1) : "0.0";
+  const activePct = kpi.unqualifiedApps ? ((kpi.unqualTotal / kpi.unqualifiedApps) * 100).toFixed(0) : "0";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div>
-        <SectionLabel>Unqualified Pipeline Overview</SectionLabel>
+        <SectionLabel>Visi <1k Applicationai</SectionLabel>
         <div style={grid(160)}>
-          <MetricCard label="Iš viso <1k" value={fmt(kpi.unqualTotal)} accent="amber" sub="Visi Unqualified pipeline" />
+          <MetricCard label="Iš viso <1k" value={fmt(kpi.unqualifiedApps)} accent="amber" sub="Visi <1k submissions" />
+          <MetricCard label="Qualified ≥1k" value={fmt(kpi.qualifiedApps)} accent="green" sub="Tinkama investicija" />
+          <MetricCard label="Partial" value={fmt(kpi.partialApps)} sub="Neužbaigė formos" />
+          <MetricCard label="Dirbami aktyviai" value={fmt(kpi.unqualTotal)} accent="blue" sub={`${activePct}% iš <1k patraukti`} />
+        </div>
+      </div>
+
+      <div>
+        <SectionLabel>Unqualified Pipeline — aktyvūs leadai</SectionLabel>
+        <div style={grid(160)}>
+          <MetricCard label="Iš viso pipeline" value={fmt(kpi.unqualTotal)} accent="amber" sub="Visi Unqualified pipeline" />
           <MetricCard label="💎 Worth Dialing" value={fmt(kpi.worthDialing)} accent="amber" sub="Reikia skambinti" />
           <MetricCard label="📋 Qualified for Call" value={fmt(kpi.qualifiedForCall)} accent="blue" sub={`${qualRate}% iš visų`} />
           <MetricCard label="🚀 Booked → Sales" value={fmt(kpi.bookedToSales)} accent="green" sub={`${convRate}% konversija`} />
@@ -706,12 +717,12 @@ function UnqualifiedTab({ kpi }) {
         <Card>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {[
-              { label: "Iš viso <1k", value: kpi.unqualTotal, color: C.amber },
-              { label: "💎 Worth Dialing", value: kpi.worthDialing, color: "#F59E0B" },
-              { label: "📋 Qualified for Call", value: kpi.qualifiedForCall, color: C.blue },
-              { label: "🚀 Booked → Sales", value: kpi.bookedToSales, color: C.green },
+              { label: "Visi <1k applicationai", value: kpi.unqualifiedApps, color: C.amber, base: kpi.unqualifiedApps },
+              { label: "💎 Worth Dialing", value: kpi.worthDialing, color: "#F59E0B", base: kpi.unqualifiedApps },
+              { label: "📋 Qualified for Call", value: kpi.qualifiedForCall, color: C.blue, base: kpi.unqualifiedApps },
+              { label: "🚀 Booked → Sales", value: kpi.bookedToSales, color: C.green, base: kpi.unqualifiedApps },
             ].map((row) => {
-              const pct = kpi.unqualTotal > 0 ? (row.value / kpi.unqualTotal) * 100 : 0;
+              const pct = row.base > 0 ? (row.value / row.base) * 100 : 0;
               return (
                 <div key={row.label}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
