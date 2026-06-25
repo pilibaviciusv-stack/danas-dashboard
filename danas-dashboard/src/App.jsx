@@ -43,7 +43,7 @@ const BOOKED_STATUSES = [
 ];
 const SHOWED_STATUSES = ["Showed up","Nurture","Middleground","Closed Won","Closed Lost"];
 
-function compute(leads, apps, scopes, filterSource, filterPeriod) {
+function compute(leads, apps, scopes, filterSource, filterPeriod, unquals = []) {
   const now = new Date();
   const days = filterPeriod === "all" ? null : parseInt(filterPeriod);
   const cutoff = days ? new Date(now - days * 864e5) : null;
@@ -109,13 +109,13 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
   const ccAfterFees = cash * 0.965;
   const cashPerCall = showed > 0 ? cash / showed : 0;
 
-  // Unqualified pipeline KPIs — from Raw_Leads filtered by Unqualified-Budget status
-  const filteredUnquals = filteredLeads.filter((r) => r.opportunity_status === "Unqualified - Budget");
+  // Unqualified pipeline KPIs — from Raw_Unqualified sheet (synced hourly by n8n)
+  const filteredUnquals = unquals.filter((r) => filterDate(r.created_date));
   const unqualTotal = filteredUnquals.length;
-  const worthDialing = 0;
-  const qualifiedForCall = 0;
-  const bookedToSales = 0;
-  const dead = 0;
+  const worthDialing = filteredUnquals.filter((r) => r.opportunity_status === "Worth Dialing").length;
+  const qualifiedForCall = filteredUnquals.filter((r) => r.opportunity_status === "Qualified for call").length;
+  const bookedToSales = filteredUnquals.filter((r) => r.opportunity_status === "Booked → Sales").length;
+  const dead = filteredUnquals.filter((r) => r.opportunity_status === "Dead").length;
 
   const pipelineStatuses = [
     "Half-Qualified No-Book","Half-Qualified Booked","Qualified Booked",
@@ -685,48 +685,41 @@ function SalesTab({ kpi }) {
 
 // ─── TAB: UNQUALIFIED ────────────────────────────────────────────────────────
 function UnqualifiedTab({ kpi }) {
-  const invTiers = ["<1k", "1k-2k", "2k-3k", "3k+"];
-  const invCounts = invTiers.map((t) => ({
-    tier: t,
-    count: kpi.filteredUnquals.filter((r) => normalizeInv(r.investment_capacity) === t).length,
-  }));
-
-  const srcCounts = {};
-  kpi.filteredUnquals.forEach((r) => {
-    const s = r.lead_source || "nežinomas";
-    srcCounts[s] = (srcCounts[s] || 0) + 1;
-  });
-  const srcRows = Object.entries(srcCounts).sort((a, b) => b[1] - a[1]);
+  const convRate = kpi.unqualTotal ? ((kpi.bookedToSales / kpi.unqualTotal) * 100).toFixed(1) : "0.0";
+  const qualRate = kpi.unqualTotal ? ((kpi.qualifiedForCall / kpi.unqualTotal) * 100).toFixed(1) : "0.0";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div>
-        <SectionLabel>Unqualified – Budget leadai</SectionLabel>
+        <SectionLabel>Unqualified Pipeline Overview</SectionLabel>
         <div style={grid(160)}>
-          <MetricCard label="Iš viso <1k" value={fmt(kpi.unqualTotal)} accent="amber" sub="Unqualified - Budget" />
-          {invCounts.map((t) => (
-            <MetricCard key={t.tier} label={`Investment: ${t.tier}`} value={fmt(t.count)}
-              accent={t.tier === "<1k" ? "amber" : t.tier === "1k-2k" ? "blue" : "green"}
-              sub={kpi.unqualTotal ? `${((t.count / kpi.unqualTotal) * 100).toFixed(0)}% iš visų` : "—"} />
-          ))}
+          <MetricCard label="Iš viso <1k" value={fmt(kpi.unqualTotal)} accent="amber" sub="Visi Unqualified pipeline" />
+          <MetricCard label="💎 Worth Dialing" value={fmt(kpi.worthDialing)} accent="amber" sub="Reikia skambinti" />
+          <MetricCard label="📋 Qualified for Call" value={fmt(kpi.qualifiedForCall)} accent="blue" sub={`${qualRate}% iš visų`} />
+          <MetricCard label="🚀 Booked → Sales" value={fmt(kpi.bookedToSales)} accent="green" sub={`${convRate}% konversija`} />
+          <MetricCard label="🗑 Dead" value={fmt(kpi.dead)} sub="Archyvuoti" />
         </div>
       </div>
 
       <div>
-        <SectionLabel>Investment Capacity pasiskirstymas</SectionLabel>
+        <SectionLabel>Funnel vizualizacija</SectionLabel>
         <Card>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {invCounts.map((t) => {
-              const pct = kpi.unqualTotal > 0 ? (t.count / kpi.unqualTotal) * 100 : 0;
-              const color = t.tier === "<1k" ? C.amber : t.tier === "1k-2k" ? C.blue : C.green;
+            {[
+              { label: "Iš viso <1k", value: kpi.unqualTotal, color: C.amber },
+              { label: "💎 Worth Dialing", value: kpi.worthDialing, color: "#F59E0B" },
+              { label: "📋 Qualified for Call", value: kpi.qualifiedForCall, color: C.blue },
+              { label: "🚀 Booked → Sales", value: kpi.bookedToSales, color: C.green },
+            ].map((row) => {
+              const pct = kpi.unqualTotal > 0 ? (row.value / kpi.unqualTotal) * 100 : 0;
               return (
-                <div key={t.tier}>
+                <div key={row.label}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, color: C.textMid }}>{t.tier}</span>
-                    <span style={{ fontSize: 12, fontWeight: 700, color }}>{t.count} ({pct.toFixed(0)}%)</span>
+                    <span style={{ fontSize: 12, color: C.textMid }}>{row.label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: row.color }}>{row.value} ({pct.toFixed(0)}%)</span>
                   </div>
                   <div style={{ height: 8, background: C.borderLight, borderRadius: 4, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 4, transition: "width 0.4s ease" }} />
+                    <div style={{ height: "100%", width: `${pct}%`, background: row.color, borderRadius: 4, transition: "width 0.4s ease" }} />
                   </div>
                 </div>
               );
@@ -735,38 +728,12 @@ function UnqualifiedTab({ kpi }) {
         </Card>
       </div>
 
-      {srcRows.length > 0 && (
-        <div>
-          <SectionLabel>Pagal šaltinį</SectionLabel>
-          <Card>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                  {["Šaltinis", "Leadai", "%"].map((h) => (
-                    <th key={h} style={{ padding: "8px 12px", textAlign: h === "Šaltinis" ? "left" : "right", fontSize: 11, fontWeight: 600, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {srcRows.map(([src, cnt]) => (
-                  <tr key={src} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
-                    <td style={{ padding: "9px 12px", fontSize: 13, color: C.text }}>{src}</td>
-                    <td style={{ padding: "9px 12px", textAlign: "right", fontSize: 13, fontWeight: 600, color: C.amber }}>{cnt}</td>
-                    <td style={{ padding: "9px 12px", textAlign: "right", fontSize: 12, color: C.textLight }}>{kpi.unqualTotal ? ((cnt / kpi.unqualTotal) * 100).toFixed(0) : 0}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-        </div>
-      )}
-
       <div>
         <SectionLabel>Kas toliau su šiais leadais?</SectionLabel>
         <Card>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {[
-              { step: "1", label: "Worth Dialing", desc: "Skambink, bandyk perrašyti prieštaravimą dėl kainos. Jei parodo potencialo — perkelk į Unqualified Pipeline.", color: C.amber },
+              { step: "1", label: "Worth Dialing", desc: "Skambink, bandyk perrašyti prieštaravimą dėl kainos. Jei parodo potencialo — perkelk į Qualified for Call.", color: C.amber },
               { step: "2", label: "Qualified for Call", desc: "Suderintas konkretus laikas. Išsiuntė pre-call content. Laukia skambučio.", color: C.blue },
               { step: "3", label: "Booked → Sales", desc: "Rezervuotas laikas main sales pipeline. Perkeliamas į pagrindinį pipeline'ą.", color: C.green },
               { step: "4", label: "Dead", desc: "Nebesusisiekiama, kategoriška 'ne', finansiškai neįmanoma. Archyvuojama.", color: C.textLight },
@@ -793,6 +760,7 @@ export default function App() {
   const [leads, setLeads] = useState([]);
   const [apps, setApps] = useState([]);
   const [scopes, setScopes] = useState([]);
+  const [unquals, setUnquals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
@@ -803,14 +771,16 @@ export default function App() {
   const load = useCallback(async () => {
     try {
       setLoading(true); setError(null);
-      const [leadRows, appRows, scopeRows] = await Promise.all([
+      const [leadRows, appRows, scopeRows, unqualRows] = await Promise.all([
         fetchRange("Raw_Leads!A:R"),
         fetchRange("Raw_Applications!A:M"),
         fetchRange("source-scopes!A:B"),
+        fetchRange("Raw_Unqualified!A:H").catch(() => []),
       ]);
       setLeads(rowsToObjects(leadRows));
       setApps(rowsToObjects(appRows));
       setScopes(scopeRows);
+      setUnquals(rowsToObjects(unqualRows));
       setLastRefresh(new Date());
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -830,7 +800,7 @@ export default function App() {
     ...scopes.filter((r) => r[0]?.startsWith("youtube")).map((r) => ({ v: r[0], l: `YT: ${r[1] || r[0]}` })),
   ];
 
-  const kpi = compute(leads, apps, scopes, filterSource, filterPeriod);
+  const kpi = compute(leads, apps, scopes, filterSource, filterPeriod, unquals);
 
   const selStyle = {
     background: C.surface,
