@@ -464,8 +464,7 @@ function FunnelTab({ kpi }) {
           <MetricCard label="Partial Submissions" value={`${kpi.completionRate}%`} sub={`${fmt(kpi.partialApps)} partial`} />
           <MetricCard label="Booked Calls" value={fmt(kpi.booked)} />
           <MetricCard label="QA → Booked Rate" value={pct(kpi.qaToBookedRate)} accent="blue" sub="Booked / Qualified Apps" />
-          <MetricCard label="Cancelled Call Rate" value={pct(kpi.canceledCallRate)} accent="red" />
-          <MetricCard label="Confirmed Call Rate" value={pct(kpi.confirmedCallRate)} accent="green" />
+
         </div>
       </div>
 
@@ -593,7 +592,6 @@ function SalesTab({ kpi }) {
         <div style={grid(160)}>
           <MetricCard label="Revenue Generated" value={`€${fmt(kpi.revenue)}`} accent="green" />
           <MetricCard label="Cash Collected" value={`€${fmt(kpi.cash)}`} accent="green" />
-          <MetricCard label="CC After Fees" value={`€${fmt(kpi.ccAfterFees)}`} sub="~3.5% fees deducted" />
           <MetricCard label="Cash per Call Taken" value={`€${fmt(kpi.cashPerCall)}`} sub="Cash / Showed" />
           <MetricCard label="Average Order Value" value={`€${fmt(kpi.aov)}`} sub="Revenue / Won" />
           <MetricCard label="Cash to Collect" value={`€${fmt(kpi.cashToCollect)}`} accent={kpi.cashToCollect > 0 ? "amber" : undefined} />
