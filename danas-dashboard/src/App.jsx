@@ -604,7 +604,7 @@ function SalesTab({ kpi }) {
         <SectionLabel>Sales Call Metrics</SectionLabel>
         <div style={grid(160)}>
           <MetricCard label="Total Calls Confirmed" value={fmt(kpi.confirmed)} />
-          <MetricCard label="Total Live Calls" value={fmt(kpi.showed)} />
+          <MetricCard label="Showed Up" value={fmt(kpi.showed)} />
           <MetricCard label="Total Close Rate" value={pct(kpi.closeRate)} accent={parseFloat(kpi.closeRate) >= 50 ? "green" : "red"} tag="Key" />
           <MetricCard label="Disqualification Rate" value={pct(kpi.disqualRate)} accent="amber" />
           <MetricCard label="No Show Rate" value={pct(kpi.noShowRate)} accent="red" />
