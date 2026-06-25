@@ -43,7 +43,7 @@ const BOOKED_STATUSES = [
 ];
 const SHOWED_STATUSES = ["Showed up","Nurture","Middleground","Closed Won","Closed Lost"];
 
-function compute(leads, apps, scopes, filterSource, filterPeriod) {
+function compute(leads, apps, scopes, filterSource, filterPeriod, unquals = []) {
   const now = new Date();
   const days = filterPeriod === "all" ? null : parseInt(filterPeriod);
   const cutoff = days ? new Date(now - days * 864e5) : null;
@@ -109,13 +109,16 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
   const ccAfterFees = cash * 0.965;
   const cashPerCall = showed > 0 ? cash / showed : 0;
 
-  const worthDialing = opp("Worth Dialing");
-  const qualifiedForCall = opp("Qualified for Call");
-  const bookedToSales = opp("Booked → Sales");
-  const dead = opp("Dead");
-  const unqualTotal = filteredLeads.filter((r) =>
-    r.lead_status === "Unqualified - Budget" || r.opportunity_status === "Unqualified - Budget"
-  ).length;
+  // Unqualified pipeline KPIs — from Raw_Unqualified sheet
+  const filteredUnquals = unquals.filter((r) => {
+    if (!filterDate(r.created_date)) return false;
+    return true;
+  });
+  const unqualTotal = filteredUnquals.length;
+  const worthDialing = filteredUnquals.filter((r) => r.opportunity_status === "Worth Dialing").length;
+  const qualifiedForCall = filteredUnquals.filter((r) => r.opportunity_status === "Qualified for Call").length;
+  const bookedToSales = filteredUnquals.filter((r) => r.opportunity_status === "Booked → Sales").length;
+  const dead = filteredUnquals.filter((r) => r.opportunity_status === "Dead").length;
 
   const pipelineStatuses = [
     "Half-Qualified No-Book","Half-Qualified Booked","Qualified Booked",
@@ -228,7 +231,7 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
     qaToBookedRate, confirmedCallRate, canceledCallRate, showRate, noShowRate, closeRate, disqualRate,
     revenue, cash, aov, cashToCollect, ccAfterFees, cashPerCall,
     pipelineBreakdown, bySource, invSplit,
-    unqualTotal, worthDialing, qualifiedForCall, bookedToSales, dead,
+    unqualTotal, worthDialing, qualifiedForCall, bookedToSales, dead, filteredUnquals,
     appsBySource, bookedBySource, igMediums, ytVideos, postCallStatus,
   };
 }
@@ -762,6 +765,7 @@ export default function App() {
   const [leads, setLeads] = useState([]);
   const [apps, setApps] = useState([]);
   const [scopes, setScopes] = useState([]);
+  const [unquals, setUnquals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
@@ -772,14 +776,16 @@ export default function App() {
   const load = useCallback(async () => {
     try {
       setLoading(true); setError(null);
-      const [leadRows, appRows, scopeRows] = await Promise.all([
+      const [leadRows, appRows, scopeRows, unqualRows] = await Promise.all([
         fetchRange("Raw_Leads!A:R"),
         fetchRange("Raw_Applications!A:M"),
         fetchRange("source-scopes!A:B"),
+        fetchRange("Raw_Unqualified!A:L"),
       ]);
       setLeads(rowsToObjects(leadRows));
       setApps(rowsToObjects(appRows));
       setScopes(scopeRows);
+      setUnquals(rowsToObjects(unqualRows));
       setLastRefresh(new Date());
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -799,7 +805,7 @@ export default function App() {
     ...scopes.filter((r) => r[0]?.startsWith("youtube")).map((r) => ({ v: r[0], l: `YT: ${r[1] || r[0]}` })),
   ];
 
-  const kpi = compute(leads, apps, scopes, filterSource, filterPeriod);
+  const kpi = compute(leads, apps, scopes, filterSource, filterPeriod, unquals);
 
   const selStyle = {
     background: C.surface,
@@ -898,3 +904,5 @@ export default function App() {
     </div>
   );
 }
+
+
