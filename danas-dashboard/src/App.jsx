@@ -76,9 +76,17 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
   const completionRate = totalApps ? ((fullApps / totalApps) * 100).toFixed(1) : "0.0";
 
   const booked = filteredLeads.filter((r) => BOOKED_STATUSES.includes(r.opportunity_status)).length;
-  const showed = filteredLeads.filter((r) => SHOWED_STATUSES.includes(r.opportunity_status)).length;
+  // showed = post-call statuses WHERE closing_call_date + 1h has passed (or no date = already happened)
+  const showed = filteredLeads.filter((r) => {
+    if (!SHOWED_STATUSES.includes(r.opportunity_status)) return false;
+    if (!r.closing_call_date) return true; // no date = definitely happened
+    const callTime = new Date(r.closing_call_date);
+    if (isNaN(callTime)) return true;
+    return new Date() > new Date(callTime.getTime() + 60 * 60 * 1000);
+  }).length;
   const won = opp("Closed Won");
   const noShow = filteredLeads.filter(isRealNoShow).length;
+  const tookCall = showed + noShow; // total calls that actually happened
   const confirmed = opp("Pursuit: Pre-Call Confirm");
   const canceled = filteredLeads.filter((r) =>
     r.opportunity_status === "Half-Qualified No-Book" || r.lead_status === "Pursuit: No-Book"
@@ -88,8 +96,8 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
   const qaToBookedRate = qualifiedApps ? ((booked / qualifiedApps) * 100).toFixed(1) : "0.0";
   const confirmedCallRate = booked ? ((confirmed / booked) * 100).toFixed(1) : "0.0";
   const canceledCallRate = booked ? ((canceled / booked) * 100).toFixed(1) : "0.0";
-  const showRate = booked ? ((showed / booked) * 100).toFixed(1) : "0.0";
-  const noShowRate = booked ? ((noShow / booked) * 100).toFixed(1) : "0.0";
+  const showRate = tookCall ? ((showed / tookCall) * 100).toFixed(1) : "0.0";
+  const noShowRate = tookCall ? ((noShow / tookCall) * 100).toFixed(1) : "0.0";
   const closeRate = showed ? ((won / showed) * 100).toFixed(1) : "0.0";
   const disqualRate = showed ? ((disqualifiedOnCall / showed) * 100).toFixed(1) : "0.0";
 
@@ -143,14 +151,22 @@ function compute(leads, apps, scopes, filterSource, filterPeriod) {
     const srcApps = filteredApps.filter((r) => r.lead_source === key);
     const srcLeads = filteredLeads.filter((r) => r.lead_source === key);
     const srcBooked = srcLeads.filter((r) => BOOKED_STATUSES.includes(r.opportunity_status)).length;
-    const srcShowed = srcLeads.filter((r) => SHOWED_STATUSES.includes(r.opportunity_status)).length;
+    const srcShowed = srcLeads.filter((r) => {
+      if (!SHOWED_STATUSES.includes(r.opportunity_status)) return false;
+      if (!r.closing_call_date) return true;
+      const ct = new Date(r.closing_call_date);
+      if (isNaN(ct)) return true;
+      return new Date() > new Date(ct.getTime() + 60 * 60 * 1000);
+    }).length;
+    const srcNoShow = srcLeads.filter(isRealNoShow).length;
+    const srcTookCall = srcShowed + srcNoShow;
     const srcWon = srcLeads.filter((r) => r.opportunity_status === "Closed Won").length;
     const srcRevenue = srcLeads.filter((r) => r.opportunity_status === "Closed Won")
       .reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
     const srcCash = srcLeads.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0);
     const srcQual = srcApps.filter((r) => normalizeInv(r.investment_capacity) !== "<1k").length;
     const srcQaToBooked = srcQual ? ((srcBooked / srcQual) * 100).toFixed(0) + "%" : "-";
-    const srcShowRate = srcBooked ? ((srcShowed / srcBooked) * 100).toFixed(0) + "%" : "-";
+    const srcShowRate = srcTookCall ? ((srcShowed / srcTookCall) * 100).toFixed(0) + "%" : "-";
     const srcCloseRate = srcShowed ? ((srcWon / srcShowed) * 100).toFixed(0) + "%" : "-";
     return {
       key, label,
