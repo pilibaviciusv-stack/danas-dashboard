@@ -710,10 +710,10 @@ function UnqualifiedTab({ kpi }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div>
-        <SectionLabel>Visi <1k Applicationai</SectionLabel>
+        <SectionLabel>Visi &lt;1k Applicationai</SectionLabel>
         <div style={grid(160)}>
           <MetricCard label="Iš viso <1k" value={fmt(kpi.unqualifiedApps)} accent="amber" sub="Visi <1k submissions" />
-          <MetricCard label="Qualified ≥1k" value={fmt(kpi.qualifiedApps)} accent="green" sub="Tinkama investicija" />
+          <MetricCard label="Qualified ≥1k" value={fmt(kpi.qualifiedTotal)} accent="green" sub="Tinkama investicija" />
           <MetricCard label="Partial" value={fmt(kpi.partialApps)} sub="Neužbaigė formos" />
           <MetricCard label="Dirbami aktyviai" value={fmt(kpi.unqualTotal)} accent="blue" sub={`${activePct}% iš <1k patraukti`} />
         </div>
