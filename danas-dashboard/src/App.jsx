@@ -87,14 +87,14 @@ function compute(leads, apps, scopes, filterSource, filterPeriod, unquals = []) 
   const won = opp("Closed Won");
   const noShow = filteredLeads.filter(isRealNoShow).length;
   const tookCall = showed + noShow; // total calls that actually happened
-  const confirmed = opp("Pursuit: Pre-Call Confirm");
+  const confirmed = tookCall; // total calls that actually happened (showed + noShow)
   const canceled = filteredLeads.filter((r) =>
     r.opportunity_status === "Half-Qualified No-Book" || r.lead_status === "Pursuit: No-Book"
   ).length;
   const disqualifiedOnCall = filteredLeads.filter((r) => r.opportunity_status === "Unqualified").length;
 
   const qaToBookedRate = qualifiedApps ? ((booked / qualifiedApps) * 100).toFixed(1) : "0.0";
-  const confirmedCallRate = booked ? ((confirmed / booked) * 100).toFixed(1) : "0.0";
+  const confirmedCallRate = booked ? ((tookCall / booked) * 100).toFixed(1) : "0.0";
   const canceledCallRate = booked ? ((canceled / booked) * 100).toFixed(1) : "0.0";
   const showRate = tookCall ? ((showed / tookCall) * 100).toFixed(1) : "0.0";
   const noShowRate = tookCall ? ((noShow / tookCall) * 100).toFixed(1) : "0.0";
@@ -601,7 +601,7 @@ function SalesTab({ kpi }) {
       <div>
         <SectionLabel>Sales Call Metrics</SectionLabel>
         <div style={grid(160)}>
-          <MetricCard label="Total Calls Confirmed" value={fmt(kpi.confirmed)} />
+          <MetricCard label="Took Call" value={fmt(kpi.confirmed)} sub="showed + no show" />
           <MetricCard label="Showed Up" value={fmt(kpi.showed)} />
           <MetricCard label="Total Close Rate" value={pct(kpi.closeRate)} accent={parseFloat(kpi.closeRate) >= 50 ? "green" : "red"} tag="Key" />
           <MetricCard label="Disqualification Rate" value={pct(kpi.disqualRate)} accent="amber" />
