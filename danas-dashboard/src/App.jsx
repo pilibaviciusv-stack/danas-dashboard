@@ -422,7 +422,7 @@ function OverviewTab({ kpi }) {
         <div style={grid(155)}>
           <MetricCard label="Iš viso" value={fmt(kpi.totalApps)} />
           <MetricCard label="Qualified ≥1k" value={fmt(kpi.qualifiedTotal)} accent="green" sub={`${kpi.totalApps ? ((kpi.qualifiedTotal/kpi.totalApps)*100).toFixed(1) : 0}% of total · ${fmt(kpi.qualifiedFromPipeline)} in pipeline`} />
-          <MetricCard label="Unqualified <1k" value={fmt(kpi.unqualifiedApps)} accent="amber" />
+          <MetricCard label="Unqualified <1k" value={fmt(kpi.totalApps - kpi.qualifiedTotal)} accent="amber" />
           <MetricCard label="Partial" value={fmt(kpi.partialApps)} sub={`${kpi.completionRate}% completion rate`} />
         </div>
       </div>
@@ -477,8 +477,8 @@ function FunnelTab({ kpi }) {
         <SectionLabel>Funnel Metrics</SectionLabel>
         <div style={grid(160)}>
           <MetricCard label="Applications" value={fmt(kpi.totalApps)} />
-          <MetricCard label="Qualified Applications" value={`${kpi.totalApps ? ((kpi.qualifiedTotal/kpi.totalApps)*100).toFixed(2) : 0}%`} accent="green" sub={`${fmt(kpi.qualifiedTotal)} leads (incl. requalified)`} />
-          <MetricCard label="Unqualified Applications" value={`${kpi.totalApps ? ((kpi.unqualifiedApps/kpi.totalApps)*100).toFixed(2) : 0}%`} accent="red" sub={`${fmt(kpi.unqualifiedApps)} leads`} />
+          <MetricCard label="Qualified Applications" value={`${kpi.totalApps ? ((kpi.qualifiedTotal/kpi.totalApps)*100).toFixed(1) : 0}%`} accent="green" sub={`${fmt(kpi.qualifiedTotal)} leads (incl. requalified)`} />
+          <MetricCard label="Unqualified Applications" value={`${kpi.totalApps ? (((kpi.totalApps - kpi.qualifiedTotal)/kpi.totalApps)*100).toFixed(1) : 0}%`} accent="red" sub={`${fmt(kpi.totalApps - kpi.qualifiedTotal)} leads`} />
           <MetricCard label="Partial Submissions" value={`${kpi.completionRate}%`} sub={`${fmt(kpi.partialApps)} partial`} />
           <MetricCard label="Booked Calls" value={fmt(kpi.booked)} />
           <MetricCard label="QA → Booked Rate" value={pct(kpi.qaToBookedRate)} accent="blue" sub="Booked / Qualified Apps" />
