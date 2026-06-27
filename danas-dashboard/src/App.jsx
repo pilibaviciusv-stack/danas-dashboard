@@ -71,9 +71,25 @@ function compute(leads, apps, scopes, filterSource, filterPeriod, unquals = []) 
   const totalApps = filteredApps.length;
   const fullApps = filteredApps.filter((r) => r.form_completion === "Full").length;
   const partialApps = filteredApps.filter((r) => r.form_completion === "Partial").length;
+  // qualifiedApps = Typeform submissions with budget ≥1k
   const qualifiedApps = filteredApps.filter((r) => { const inv = normalizeInv(r.investment_capacity); return inv && inv !== "<1k"; }).length;
   const unqualifiedApps = filteredApps.filter((r) => normalizeInv(r.investment_capacity) === "<1k").length;
   const completionRate = totalApps ? ((fullApps / totalApps) * 100).toFixed(1) : "0.0";
+
+  // Sales pipeline statuses — anyone here is considered qualified (either via Typeform ≥1k or requalified from Unqualified pipeline)
+  const SALES_PIPELINE_STATUSES = [
+    "Half-Qualified No-Book","Half-Qualified Booked","Qualified Booked",
+    "Showed up","No Show","Nurture","Middleground","Closed Won","Closed Lost","Unqualified",
+    "Pursuit: Pre-Call Confirm",
+  ];
+  // leadsInSalesPipeline = unique leads that made it into the sales pipeline
+  const leadsInSalesPipeline = filteredLeads.filter((r) => SALES_PIPELINE_STATUSES.includes(r.opportunity_status));
+
+  // qualifiedTotal = max of (Typeform-qualified apps, leads actually in the sales pipeline)
+  // This catches requalified leads from the Unqualified pipeline who had <1k budget on Typeform
+  // We use the higher number to avoid double-counting when same person has both a Typeform app and a pipeline opp
+  const qualifiedFromPipeline = leadsInSalesPipeline.length;
+  const qualifiedTotal = Math.max(qualifiedApps, qualifiedFromPipeline);
 
   const booked = filteredLeads.filter((r) => BOOKED_STATUSES.includes(r.opportunity_status)).length;
   // showed = post-call statuses WHERE closing_call_date + 1h has passed (or no date = already happened)
@@ -93,7 +109,7 @@ function compute(leads, apps, scopes, filterSource, filterPeriod, unquals = []) 
   ).length;
   const disqualifiedOnCall = filteredLeads.filter((r) => r.opportunity_status === "Unqualified").length;
 
-  const qaToBookedRate = qualifiedApps ? ((booked / qualifiedApps) * 100).toFixed(1) : "0.0";
+  const qaToBookedRate = qualifiedTotal ? ((booked / qualifiedTotal) * 100).toFixed(1) : "0.0";
   const confirmedCallRate = booked ? ((tookCall / booked) * 100).toFixed(1) : "0.0";
   const canceledCallRate = booked ? ((canceled / booked) * 100).toFixed(1) : "0.0";
   const showRate = tookCall ? ((showed / tookCall) * 100).toFixed(1) : "0.0";
@@ -164,7 +180,9 @@ function compute(leads, apps, scopes, filterSource, filterPeriod, unquals = []) 
     const srcRevenue = srcLeads.filter((r) => r.opportunity_status === "Closed Won")
       .reduce((s, r) => s + (parseFloat(r.value) || 0), 0);
     const srcCash = srcLeads.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0);
-    const srcQual = srcApps.filter((r) => normalizeInv(r.investment_capacity) !== "<1k").length;
+    const srcQualFromApps = srcApps.filter((r) => normalizeInv(r.investment_capacity) !== "<1k").length;
+    const srcQualFromPipeline = srcLeads.filter((r) => SALES_PIPELINE_STATUSES.includes(r.opportunity_status)).length;
+    const srcQual = Math.max(srcQualFromApps, srcQualFromPipeline);
     const srcQaToBooked = srcQual ? ((srcBooked / srcQual) * 100).toFixed(0) + "%" : "-";
     const srcShowRate = srcTookCall ? ((srcShowed / srcTookCall) * 100).toFixed(0) + "%" : "-";
     const srcCloseRate = srcShowed ? ((srcWon / srcShowed) * 100).toFixed(0) + "%" : "-";
@@ -223,7 +241,7 @@ function compute(leads, apps, scopes, filterSource, filterPeriod, unquals = []) 
   ].filter(d => d.value > 0);
 
   return {
-    totalApps, fullApps, partialApps, qualifiedApps, unqualifiedApps, completionRate,
+    totalApps, fullApps, partialApps, qualifiedApps, qualifiedFromPipeline, qualifiedTotal, unqualifiedApps, completionRate,
     booked, showed, won, noShow, confirmed, canceled, disqualifiedOnCall,
     qaToBookedRate, confirmedCallRate, canceledCallRate, showRate, noShowRate, closeRate, disqualRate,
     revenue, cash, aov, cashToCollect, ccAfterFees, cashPerCall,
@@ -403,7 +421,7 @@ function OverviewTab({ kpi }) {
         <SectionLabel>Applications</SectionLabel>
         <div style={grid(155)}>
           <MetricCard label="Iš viso" value={fmt(kpi.totalApps)} />
-          <MetricCard label="Qualified ≥1k" value={fmt(kpi.qualifiedApps)} accent="green" sub={`${kpi.totalApps ? ((kpi.qualifiedApps/kpi.totalApps)*100).toFixed(1) : 0}% of total`} />
+          <MetricCard label="Qualified ≥1k" value={fmt(kpi.qualifiedTotal)} accent="green" sub={`${kpi.totalApps ? ((kpi.qualifiedTotal/kpi.totalApps)*100).toFixed(1) : 0}% of total · ${fmt(kpi.qualifiedFromPipeline)} in pipeline`} />
           <MetricCard label="Unqualified <1k" value={fmt(kpi.unqualifiedApps)} accent="amber" />
           <MetricCard label="Partial" value={fmt(kpi.partialApps)} sub={`${kpi.completionRate}% completion rate`} />
         </div>
@@ -459,7 +477,7 @@ function FunnelTab({ kpi }) {
         <SectionLabel>Funnel Metrics</SectionLabel>
         <div style={grid(160)}>
           <MetricCard label="Applications" value={fmt(kpi.totalApps)} />
-          <MetricCard label="Qualified Applications" value={`${kpi.totalApps ? ((kpi.qualifiedApps/kpi.totalApps)*100).toFixed(2) : 0}%`} accent="green" sub={`${fmt(kpi.qualifiedApps)} leads`} />
+          <MetricCard label="Qualified Applications" value={`${kpi.totalApps ? ((kpi.qualifiedTotal/kpi.totalApps)*100).toFixed(2) : 0}%`} accent="green" sub={`${fmt(kpi.qualifiedTotal)} leads (incl. requalified)`} />
           <MetricCard label="Unqualified Applications" value={`${kpi.totalApps ? ((kpi.unqualifiedApps/kpi.totalApps)*100).toFixed(2) : 0}%`} accent="red" sub={`${fmt(kpi.unqualifiedApps)} leads`} />
           <MetricCard label="Partial Submissions" value={`${kpi.completionRate}%`} sub={`${fmt(kpi.partialApps)} partial`} />
           <MetricCard label="Booked Calls" value={fmt(kpi.booked)} />
